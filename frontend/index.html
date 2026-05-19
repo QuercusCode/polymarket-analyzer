@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Polymarket Analyzer</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-dot"></div>
+  <h1>Polymarket Analyzer</h1>
+  <span class="refresh-time" id="refresh-time">Loading…</span>
+  <div class="header-right">
+    <button class="btn btn-sm" id="refresh-btn" onclick="manualRefresh()">↺ Refresh</button>
+  </div>
+</header>
+
+<div class="main-layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="card">
+      <div class="card-title">Overview</div>
+      <div class="stat-grid">
+        <div class="stat-item">
+          <span class="stat-label">Markets</span>
+          <span class="stat-value" id="stat-total">—</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">24h Volume</span>
+          <span class="stat-value green" id="stat-vol">—</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Active Surges</span>
+          <span class="stat-value yellow" id="stat-surges">—</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Resolving Soon</span>
+          <span class="stat-value" id="stat-resolving">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Categories</div>
+      <div class="cat-list" id="cat-list">
+        <div class="cat-item active" data-cat="All">All <span class="cat-count" id="cat-all-count">…</span></div>
+      </div>
+      <script>
+        document.getElementById('cat-list').addEventListener('click', (e) => {
+          const item = e.target.closest('.cat-item');
+          if (item && typeof selectCat === 'function') selectCat(item.dataset.cat);
+        });
+      </script>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="content">
+    <div class="toolbar">
+      <div class="search-wrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input
+          class="search-input"
+          id="search-input"
+          type="text"
+          placeholder="Search markets…"
+          oninput="debounceSearch()"
+        />
+      </div>
+      <select id="sort-select" onchange="loadMarkets()">
+        <option value="volume24hr">Sort: 24h Volume</option>
+        <option value="volume">Sort: Total Volume</option>
+        <option value="liquidity">Sort: Liquidity</option>
+        <option value="edge_score">Sort: Edge Score</option>
+        <option value="days_to_resolution">Sort: Resolving Soon</option>
+      </select>
+      <select id="min-vol-select" onchange="loadMarkets()">
+        <option value="0">Min Volume: Any</option>
+        <option value="1000">Min $1K 24h Vol</option>
+        <option value="10000">Min $10K 24h Vol</option>
+        <option value="50000">Min $50K 24h Vol</option>
+      </select>
+      <span class="results-meta" id="results-meta"></span>
+    </div>
+
+    <div class="market-grid" id="market-grid">
+      <div class="empty-state">
+        <div class="spinner"></div>
+        <p>Fetching markets from Polymarket…</p>
+      </div>
+    </div>
+
+    <div class="pagination" id="pagination"></div>
+  </main>
+</div>
+
+<!-- Market Detail Modal -->
+<div class="modal-overlay hidden" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <button class="modal-close" onclick="closeModalDirect()">✕</button>
+    <div class="modal-title" id="modal-title"></div>
+
+    <div class="modal-grid" id="modal-stats"></div>
+
+    <div class="signal-row" id="modal-signals" style="margin-bottom:16px"></div>
+
+    <div style="margin-bottom:8px; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted)">
+      Price History (YES%)
+    </div>
+    <div class="chart-wrap">
+      <canvas id="price-chart"></canvas>
+    </div>
+
+    <div class="kelly-section">
+      <div class="kelly-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2">
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+        Kelly Criterion Calculator
+      </div>
+      <div class="kelly-inputs">
+        <div class="input-group">
+          <label>Your Probability Estimate (YES %)</label>
+          <input type="number" id="kelly-prob" min="1" max="99" step="1"
+                 placeholder="e.g. 60" oninput="calcKelly()" />
+        </div>
+        <div class="input-group">
+          <label>Your Bankroll ($)</label>
+          <input type="number" id="kelly-bankroll" min="10" step="10"
+                 value="1000" oninput="calcKelly()" />
+        </div>
+        <div class="input-group">
+          <label>Market Price (YES %) — auto-filled</label>
+          <input type="number" id="kelly-market-price" min="1" max="99" step="0.1"
+                 readonly style="opacity:0.6" />
+        </div>
+      </div>
+      <div class="kelly-result" id="kelly-result">
+        <div class="kelly-result-grid">
+          <div class="kelly-row">
+            <span class="kelly-row-label">Bet Direction</span>
+            <span class="kelly-row-val" id="kelly-direction"></span>
+          </div>
+          <div class="kelly-row">
+            <span class="kelly-row-label">Your Edge</span>
+            <span class="kelly-row-val" id="kelly-edge"></span>
+          </div>
+          <div class="kelly-row">
+            <span class="kelly-row-label">Full Kelly Bet</span>
+            <span class="kelly-row-val" id="kelly-full"></span>
+          </div>
+          <div class="kelly-row">
+            <span class="kelly-row-label">Half Kelly (safer)</span>
+            <span class="kelly-row-val" id="kelly-half"></span>
+          </div>
+        </div>
+        <p style="margin-top:10px; font-size:11px; color:var(--muted)">
+          Half Kelly is usually recommended. Full Kelly maximises long-run growth but requires exact probability estimates.
+        </p>
+      </div>
+    </div>
+
+    <div style="margin-top:14px; text-align:right">
+      <a id="modal-polymarket-link" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">
+        Open on Polymarket ↗
+      </a>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

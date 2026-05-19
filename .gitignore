@@ -1,0 +1,5 @@
+backend/.venv/
+backend/polymarket.db
+backend/__pycache__/
+*.pyc
+.DS_Store
