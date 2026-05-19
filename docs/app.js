@@ -1,13 +1,15 @@
 /* ──────────────────────────────────────────────────────────────────────────
    Polymarket Analyzer — pure browser. No backend.
-   All Polymarket data is fetched directly from their public APIs.
+   Live data from gamma-api.polymarket.com (markets) and clob.polymarket.com
+   (price history). Recommendation, signals, Kelly sizing — all client-side.
    ────────────────────────────────────────────────────────────────────────── */
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 const CLOB_API  = 'https://clob.polymarket.com';
 const MAX_MARKETS = 500;
-const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 min
-const CACHE_KEY = 'pm_analyzer_cache_v1';
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+const CACHE_KEY = 'pm_analyzer_cache_v2';
+const INTRO_KEY = 'pm_intro_seen_v1';
 
 let allMarkets   = [];
 let lastRefresh  = 0;
@@ -15,39 +17,40 @@ let currentPage  = 0;
 const PAGE_SIZE  = 48;
 let currentCat   = 'All';
 let priceChart   = null;
+let openMarketObj = null;
+let selectedProb = null;
 let searchDebounce = null;
 
-// ── Category classifier ──────────────────────────────────────────────────────
+// ── Category classifier ─────────────────────────────────────────────────────
 
 const KEYWORD_CATEGORIES = [
-  ['Crypto', [/\bbitcoin\b/, /\bbtc\b/, /\bethereum\b/, /\beth\b/, /\bcrypto\b/,
-              /\bdefi\b/, /\bnft\b/, /\bsolana\b/, /\baltcoin\b/, /\bblockchain\b/,
-              /\bstablecoin\b/, /\busdc?\b/, /\bcoinbase\b/, /\bbinance\b/]],
-  ['Politics', [/\belection\b/, /\bpresident\b/, /\bcongress\b/, /\bsenate\b/,
-                /\bvote\b/, /\bprimary\b/, /\bdemocrat\b/, /\brepublican\b/,
-                /\bgop\b/, /\btrump\b/, /\bbiden\b/, /\bharris\b/, /\bparliament\b/,
-                /\bminister\b/, /\bimpeach\b/, /\blegislat/, /\bnomination\b/,
-                /\bcandidate\b/]],
-  ['Finance', [/\bstock\b/, /\bgdp\b/, /\brecession\b/, /\bfederal reserve\b/,
-               /\binterest rate\b/, /\bs&p\b/, /\bnasdaq\b/, /\bipo\b/,
-               /\bmarket cap\b/, /\binflation\b/, /\bcpi\b/, /\bfed\b/,
-               /\bearnings\b/, /\btreasury\b/, /\bmicrostrategy\b/]],
-  ['Sports', [/\bnfl\b/, /\bnba\b/, /\bmlb\b/, /\bnhl\b/, /\bfifa\b/,
-              /\bworld cup\b/, /\bsoccer\b/, /\bbasketball\b/, /\bfootball\b/,
-              /\bbaseball\b/, /\bhockey\b/, /\bsuper bowl\b/, /\bolympics\b/,
-              /\bwimbledon\b/, /\btennis\b/, /\bgolf\b/, /\bufc\b/, /\bbox(ing)?\b/,
-              /\bchampionship\b/, /\btournament\b/, /\bleague\b/, /\bfinals?\b/]],
-  ['Tech', [/\bartificial intelligence\b/, /\bopenai\b/, /\bgpt\b/, /\bgoogle\b/,
-            /\bmeta\b/, /\bapple\b/, /\btesla\b/, /\bmicrosoft\b/, /\bstartup\b/,
-            /\bspacex\b/, /\bsemiconductor\b/, /\bchip\b/]],
-  ['World', [/\bwar\b/, /\bceasefire\b/, /\bnato\b/, /\bukraine\b/, /\brussia\b/,
-             /\bchina\b/, /\biran\b/, /\bmiddle east\b/, /\bisrael\b/, /\bgaza\b/,
-             /\bsanction/, /\bnuclear\b/, /\btreaty\b/]],
+  ['Crypto',     [/\bbitcoin\b/, /\bbtc\b/, /\bethereum\b/, /\beth\b/, /\bcrypto\b/,
+                  /\bdefi\b/, /\bnft\b/, /\bsolana\b/, /\baltcoin\b/, /\bblockchain\b/,
+                  /\bstablecoin\b/, /\busdc?\b/, /\bcoinbase\b/, /\bbinance\b/]],
+  ['Politics',   [/\belection\b/, /\bpresident\b/, /\bcongress\b/, /\bsenate\b/,
+                  /\bvote\b/, /\bprimary\b/, /\bdemocrat\b/, /\brepublican\b/,
+                  /\bgop\b/, /\btrump\b/, /\bbiden\b/, /\bharris\b/, /\bparliament\b/,
+                  /\bminister\b/, /\bimpeach\b/, /\blegislat/, /\bnomination\b/,
+                  /\bcandidate\b/]],
+  ['Finance',    [/\bstock\b/, /\bgdp\b/, /\brecession\b/, /\bfederal reserve\b/,
+                  /\binterest rate\b/, /\bs&p\b/, /\bnasdaq\b/, /\bipo\b/,
+                  /\bmarket cap\b/, /\binflation\b/, /\bcpi\b/, /\bfed\b/,
+                  /\bearnings\b/, /\btreasury\b/, /\bmicrostrategy\b/]],
+  ['Sports',     [/\bnfl\b/, /\bnba\b/, /\bmlb\b/, /\bnhl\b/, /\bfifa\b/,
+                  /\bworld cup\b/, /\bsoccer\b/, /\bbasketball\b/, /\bfootball\b/,
+                  /\bbaseball\b/, /\bhockey\b/, /\bsuper bowl\b/, /\bolympics\b/,
+                  /\bwimbledon\b/, /\btennis\b/, /\bgolf\b/, /\bufc\b/, /\bbox(ing)?\b/,
+                  /\bchampionship\b/, /\btournament\b/, /\bleague\b/, /\bfinals?\b/]],
+  ['Tech',       [/\bartificial intelligence\b/, /\bopenai\b/, /\bgpt\b/, /\bgoogle\b/,
+                  /\bmeta\b/, /\bapple\b/, /\btesla\b/, /\bmicrosoft\b/, /\bstartup\b/,
+                  /\bspacex\b/, /\bsemiconductor\b/, /\bchip\b/]],
+  ['World',      [/\bwar\b/, /\bceasefire\b/, /\bnato\b/, /\bukraine\b/, /\brussia\b/,
+                  /\bchina\b/, /\biran\b/, /\bmiddle east\b/, /\bisrael\b/, /\bgaza\b/,
+                  /\bsanction/, /\bnuclear\b/, /\btreaty\b/]],
   ['Entertainment', [/\boscar\b/, /\bgrammy\b/, /\bemmy\b/, /\bmovie\b/, /\bfilm\b/,
-                     /\bnetflix\b/, /\btaylor swift\b/, /\bceleb/, /\baward\b/,
-                     /\balbum\b/]],
-  ['Science', [/\bclimate\b/, /\bco2\b/, /\bhurricane\b/, /\bearthquake\b/,
-               /\bcovid\b/, /\bvaccine\b/, /\bfda\b/, /\bnasa\b/, /\bmars\b/]],
+                     /\bnetflix\b/, /\btaylor swift\b/, /\bceleb/, /\baward\b/, /\balbum\b/]],
+  ['Science',    [/\bclimate\b/, /\bco2\b/, /\bhurricane\b/, /\bearthquake\b/,
+                  /\bcovid\b/, /\bvaccine\b/, /\bfda\b/, /\bnasa\b/, /\bmars\b/]],
 ];
 
 function extractCategory(question) {
@@ -58,7 +61,7 @@ function extractCategory(question) {
   return 'Other';
 }
 
-// ── Analyzer ────────────────────────────────────────────────────────────────
+// ── Market analyzer ─────────────────────────────────────────────────────────
 
 function parsePrices(market) {
   try {
@@ -81,32 +84,6 @@ function daysToResolution(market) {
   } catch { return null; }
 }
 
-function edgeScore(market) {
-  let score = 50;
-  const liq  = +market.liquidityNum || +market.liquidity || 0;
-  const v24  = +market.volume24hr  || +market.volume24hrClob || 0;
-  const [yp] = parsePrices(market);
-  const days = daysToResolution(market);
-
-  if (liq > 0) score += Math.min(20, (v24 / liq) * 50);
-
-  const uncertainty = 1 - Math.abs(yp - 0.5) * 2;
-  score += uncertainty * 15;
-  if (yp > 0.93 || yp < 0.07) score -= 25;
-
-  if (liq < 500) score -= 30;
-  else if (liq < 2000) score -= 10;
-  else if (liq > 50000) score += 10;
-
-  if (days != null) {
-    if (days >= 3 && days <= 60) score += 10;
-    else if (days < 1) score -= 35;
-    else if (days > 365) score -= 15;
-  }
-
-  return Math.max(0, Math.min(100, +score.toFixed(1)));
-}
-
 function generateSignals(market) {
   const signals = [];
   const liq = +market.liquidityNum || +market.liquidity || 0;
@@ -127,54 +104,92 @@ function generateSignals(market) {
   return signals;
 }
 
+/**
+ * Classify each market into one of three buckets:
+ *   buy   — liquid, fair price band, reasonable timing
+ *   watch — borderline (thin liquidity OR crowded OR weird timing)
+ *   skip  — near-certain outcome OR no liquidity OR resolving today
+ */
+function classify(market) {
+  const liq  = +market.liquidityNum || +market.liquidity || 0;
+  const v24  = +market.volume24hr || 0;
+  const [yp] = parsePrices(market);
+  const days = daysToResolution(market);
+
+  // Hard-skip conditions
+  if (liq < 1000)                      return { tier: 'skip', reason: 'Too little money in the pool — spreads will eat any edge.' };
+  if (days != null && days < 1)        return { tier: 'skip', reason: 'About to resolve. Volatile and emotional — usually a bad entry.' };
+  if (yp > 0.97 || yp < 0.03)          return { tier: 'skip', reason: 'Outcome essentially priced as a sure thing. Hard to find edge.' };
+
+  // Buy candidate (the goldilocks zone)
+  if (liq >= 50000 && yp >= 0.15 && yp <= 0.85 && (days == null || (days >= 3 && days <= 90)) && v24 >= 5000) {
+    return { tier: 'buy', reason: 'Healthy liquidity, fair price range, time to play out, and active trading.' };
+  }
+
+  // Otherwise watch
+  let reason = 'Tradeable but with caveats: ';
+  const issues = [];
+  if (liq < 50000)                                     issues.push('moderate liquidity');
+  if (yp > 0.90 || yp < 0.10)                          issues.push('crowded price');
+  if (days != null && (days < 3 || days > 180))        issues.push('awkward timing');
+  if (v24 < 1000)                                      issues.push('quiet trading');
+  reason += issues.join(', ') + '.';
+  return { tier: 'watch', reason };
+}
+
 function analyzeMarket(m) {
   if (!m.active || m.archived) return null;
   const [yp, np] = parsePrices(m);
   const days = daysToResolution(m);
+  const cls = classify(m);
   return {
     ...m,
     yes_price: yp, no_price: np,
     days_to_resolution: days,
-    edge_score: edgeScore(m),
     signals: generateSignals(m),
     category: extractCategory(m.question),
-    liquidity: +(+(m.liquidityNum || m.liquidity || 0)).toFixed(2),
+    recommendation: cls.tier,
+    recommendation_reason: cls.reason,
+    liquidity:  +(+(m.liquidityNum || m.liquidity || 0)).toFixed(2),
     volume24hr: +(+(m.volume24hr || m.volume24hrClob || 0)).toFixed(2),
-    volume: +(+(m.volumeNum || m.volume || 0)).toFixed(2),
+    volume:     +(+(m.volumeNum || m.volume || 0)).toFixed(2),
   };
 }
 
-// ── Kelly Criterion ─────────────────────────────────────────────────────────
+// ── Kelly ───────────────────────────────────────────────────────────────────
 
 function kellyCalc(userProb, marketPrice, bankroll = 1000) {
   userProb    = Math.max(0.001, Math.min(0.999, userProb));
   marketPrice = Math.max(0.001, Math.min(0.999, marketPrice));
 
-  let direction, edge, b, p, q, costPerShare;
+  let direction, edge, b, p, q;
   if (userProb >= marketPrice) {
     direction = 'YES';
     b = (1 - marketPrice) / marketPrice;
     p = userProb; q = 1 - userProb;
     edge = userProb - marketPrice;
-    costPerShare = marketPrice;
   } else {
     direction = 'NO';
     b = marketPrice / (1 - marketPrice);
     p = 1 - userProb; q = userProb;
     edge = (1 - userProb) - (1 - marketPrice);
-    costPerShare = 1 - marketPrice;
   }
-
   let f = (b * p - q) / b;
   f = Math.max(0, Math.min(f, 0.25));
 
+  // 2% bankroll cap
+  const fullAmt    = f * bankroll;
+  const halfAmt    = fullAmt / 2;
+  const safetyCap  = bankroll * 0.02;
+  const recAmt     = Math.min(halfAmt, safetyCap);
+
   return {
-    direction,
-    edge_pct: +(edge * 100).toFixed(2),
-    kelly_fraction: +f.toFixed(4),
-    full_kelly:    +(f * bankroll).toFixed(2),
-    half_kelly:    +(f * bankroll / 2).toFixed(2),
-    quarter_kelly: +(f * bankroll / 4).toFixed(2),
+    direction, edge_pct: +(edge * 100).toFixed(2),
+    full_amt: +fullAmt.toFixed(2),
+    half_amt: +halfAmt.toFixed(2),
+    safe_amt: +recAmt.toFixed(2),
+    is_capped: halfAmt > safetyCap,
+    cost_per_share: direction === 'YES' ? marketPrice : (1 - marketPrice),
   };
 }
 
@@ -201,16 +216,12 @@ async function fetchPriceHistory(market) {
   try {
     const tokenIds = JSON.parse(market.clobTokenIds || '[]');
     if (!tokenIds.length) return [];
-    // tokenIds[0] is the YES token
     const url = `${CLOB_API}/prices-history?market=${tokenIds[0]}&interval=1w&fidelity=60`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json();
     return (data.history || []).map(p => ({ t: p.t, p: p.p }));
-  } catch (e) {
-    console.warn('price-history fetch failed', e);
-    return [];
-  }
+  } catch { return []; }
 }
 
 async function refreshData() {
@@ -248,7 +259,7 @@ function loadCache() {
     if (!raw) return false;
     const { markets, ts } = JSON.parse(raw);
     if (!markets || !ts) return false;
-    if (Date.now() - ts > 30 * 60 * 1000) return false;  // 30 min max stale
+    if (Date.now() - ts > 30 * 60 * 1000) return false;
     allMarkets = markets;
     lastRefresh = ts;
     return true;
@@ -259,6 +270,7 @@ function loadCache() {
 
 function render() {
   renderStats();
+  renderRecSummary();
   renderCategories();
   renderMarkets();
   renderRefreshTime();
@@ -282,6 +294,24 @@ function renderStats() {
   document.getElementById('stat-resolving').textContent = fmt(resolving);
 }
 
+function renderRecSummary() {
+  const counts = { buy: 0, watch: 0, skip: 0 };
+  for (const m of allMarkets) counts[m.recommendation] = (counts[m.recommendation] || 0) + 1;
+  document.getElementById('rec-summary').innerHTML = `
+    <div class="rec-row" data-filter="buy">
+      <span><span class="rec-pill rec-buy">🟢 Buy Candidate</span></span>
+      <span class="rec-row-count">${counts.buy}</span>
+    </div>
+    <div class="rec-row" data-filter="watch">
+      <span><span class="rec-pill rec-watch">🟡 Watch</span></span>
+      <span class="rec-row-count">${counts.watch}</span>
+    </div>
+    <div class="rec-row" data-filter="skip">
+      <span><span class="rec-pill rec-skip">🔴 Skip</span></span>
+      <span class="rec-row-count">${counts.skip}</span>
+    </div>`;
+}
+
 function renderCategories() {
   const counts = {};
   for (const m of allMarkets) {
@@ -290,8 +320,7 @@ function renderCategories() {
   }
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   const total = allMarkets.length;
-  const list = document.getElementById('cat-list');
-  list.innerHTML = `
+  document.getElementById('cat-list').innerHTML = `
     <div class="cat-item ${currentCat === 'All' ? 'active' : ''}" data-cat="All">
       All <span class="cat-count">${total}</span>
     </div>
@@ -301,30 +330,40 @@ function renderCategories() {
       </div>`).join('')}`;
 }
 
+const REC_RANK = { buy: 3, watch: 2, skip: 1 };
+
 function getFilteredMarkets() {
   let list = allMarkets.slice();
   if (currentCat !== 'All')
     list = list.filter(m => (m.category || 'Other') === currentCat);
+
+  const recFilter = document.getElementById('rec-filter').value;
+  if (recFilter !== 'all') list = list.filter(m => m.recommendation === recFilter);
+
   const q = document.getElementById('search-input').value.trim().toLowerCase();
   if (q) list = list.filter(m => (m.question || '').toLowerCase().includes(q));
-  const minVol = +document.getElementById('min-vol-select').value;
-  if (minVol > 0) list = list.filter(m => (m.volume24hr || 0) >= minVol);
 
   const sortBy = document.getElementById('sort-select').value;
-  const reverse = sortBy !== 'days_to_resolution';
-  list.sort((a, b) => {
-    const av = a[sortBy] || 0, bv = b[sortBy] || 0;
-    return reverse ? bv - av : av - bv;
-  });
+  if (sortBy === 'recommendation') {
+    list.sort((a, b) =>
+      (REC_RANK[b.recommendation] - REC_RANK[a.recommendation]) ||
+      ((b.volume24hr || 0) - (a.volume24hr || 0))
+    );
+  } else {
+    const reverse = sortBy !== 'days_to_resolution';
+    list.sort((a, b) => {
+      const av = a[sortBy] || 0, bv = b[sortBy] || 0;
+      return reverse ? bv - av : av - bv;
+    });
+  }
   return list;
 }
 
 function renderMarkets() {
   const filtered = getFilteredMarkets();
-  const meta = document.getElementById('results-meta');
   const start = currentPage * PAGE_SIZE;
-  const end = Math.min(start + PAGE_SIZE, filtered.length);
-  meta.textContent = filtered.length
+  const end   = Math.min(start + PAGE_SIZE, filtered.length);
+  document.getElementById('results-meta').textContent = filtered.length
     ? `${start + 1}–${end} of ${fmt(filtered.length)} markets`
     : '';
 
@@ -338,22 +377,28 @@ function renderMarkets() {
   renderPagination(filtered.length);
 }
 
+function recPill(rec) {
+  if (rec === 'buy')   return '<span class="rec-pill rec-buy">🟢 Buy Candidate</span>';
+  if (rec === 'watch') return '<span class="rec-pill rec-watch">🟡 Watch</span>';
+  return                      '<span class="rec-pill rec-skip">🔴 Skip</span>';
+}
+
 function marketCard(m) {
-  const edgeCls = m.edge_score >= 70 ? 'edge-high'
-                : m.edge_score >= 45 ? 'edge-medium' : 'edge-low';
   const days = m.days_to_resolution;
   const daysStr = days == null ? '—'
-                : days < 1   ? '<1d'
-                : days < 30  ? `${Math.round(days)}d`
-                :              `${Math.round(days / 30)}mo`;
+                : days < 1 ? '<1d'
+                : days < 30 ? `${Math.round(days)}d`
+                : `${Math.round(days / 30)}mo`;
   const signals = (m.signals || [])
     .map(s => `<span class="signal signal-${s}">${signalLabel(s)}</span>`).join('');
+  const lead = m.yes_price >= 0.5 ? 'YES' : 'NO';
+  const leadPct = pct(m.yes_price >= 0.5 ? m.yes_price : m.no_price);
 
   return `
-  <div class="market-card" data-id="${esc(m.id || m.conditionId)}">
+  <div class="market-card rec-${m.recommendation}-card" data-id="${esc(m.id || m.conditionId)}">
     <div class="card-header">
       <span class="card-question">${esc(m.question || 'Unknown market')}</span>
-      <span class="edge-badge ${edgeCls}">${m.edge_score}</span>
+      ${recPill(m.recommendation)}
     </div>
     <div class="price-bar-wrap">
       <div class="price-bar">
@@ -363,6 +408,7 @@ function marketCard(m) {
         <span class="yes-price">YES ${pct(m.yes_price)}</span>
         <span class="no-price">NO ${pct(m.no_price)}</span>
       </div>
+      <div class="crowd-line">Crowd thinks <strong>${lead}</strong> · ${leadPct} chance</div>
     </div>
     ${signals ? `<div class="signal-row">${signals}</div>` : ''}
     <div class="card-footer">
@@ -371,7 +417,7 @@ function marketCard(m) {
         <span class="card-footer-val">${fmtMoney(m.volume24hr)}</span>
       </div>
       <div class="card-footer-item">
-        <span class="card-footer-label">Liquidity</span>
+        <span class="card-footer-label">Pool</span>
         <span class="card-footer-val">${fmtMoney(m.liquidity)}</span>
       </div>
       <div class="card-footer-item">
@@ -403,55 +449,113 @@ function renderPagination(total) {
 async function openMarket(id) {
   const market = allMarkets.find(m => (m.id === id) || (m.conditionId === id));
   if (!market) return;
+  openMarketObj = market;
+  selectedProb  = null;
 
   document.getElementById('modal-overlay').classList.remove('hidden');
   document.getElementById('modal-title').textContent = market.question || 'Market';
   document.getElementById('kelly-result').classList.remove('visible');
+  document.getElementById('custom-prob').classList.add('hidden');
   document.getElementById('kelly-prob').value = '';
+  document.querySelectorAll('.trade-btn').forEach(b => b.classList.remove('selected'));
 
-  // Stats grid
-  document.getElementById('modal-stats').innerHTML = `
-    <div class="modal-stat">
-      <span class="modal-stat-label">YES Price</span>
-      <span class="modal-stat-value yes-price">${pct(market.yes_price)}</span>
-    </div>
-    <div class="modal-stat">
-      <span class="modal-stat-label">NO Price</span>
-      <span class="modal-stat-value no-price">${pct(market.no_price)}</span>
-    </div>
-    <div class="modal-stat">
-      <span class="modal-stat-label">24h Volume</span>
-      <span class="modal-stat-value">${fmtMoneyFull(market.volume24hr)}</span>
-    </div>
-    <div class="modal-stat">
-      <span class="modal-stat-label">Liquidity</span>
-      <span class="modal-stat-value">${fmtMoneyFull(market.liquidity)}</span>
-    </div>
-    <div class="modal-stat">
-      <span class="modal-stat-label">Total Volume</span>
-      <span class="modal-stat-value">${fmtMoneyFull(market.volume)}</span>
-    </div>
-    <div class="modal-stat">
-      <span class="modal-stat-label">Resolves In</span>
-      <span class="modal-stat-value">${
-        market.days_to_resolution == null ? '—'
-        : market.days_to_resolution < 1 ? '<1 day'
-        : Math.round(market.days_to_resolution) + ' days'}</span>
-    </div>`;
+  renderRecBanner(market);
+  renderModalStats(market);
 
   document.getElementById('modal-signals').innerHTML = (market.signals || [])
     .map(s => `<span class="signal signal-${s}">${signalLabel(s)}</span>`).join('');
 
-  document.getElementById('kelly-market-price').value = (market.yes_price * 100).toFixed(1);
-
   const link = document.getElementById('modal-polymarket-link');
   link.href = market.slug ? `https://polymarket.com/event/${market.slug}` : 'https://polymarket.com';
 
-  // Price history — render placeholder while loading, then real data
+  // Adjust the trade-hint to reference the actual current price
+  document.getElementById('trade-hint').innerHTML =
+    `Polymarket says YES has a <strong>${pct(market.yes_price)}</strong> chance of happening. ` +
+    `Pick the option that matches your view — we'll do the math.`;
+
+  // Reset trend & chart
+  document.getElementById('trend-badge').textContent = '';
   if (priceChart) { priceChart.destroy(); priceChart = null; }
   drawChart([], true);
+
   const history = await fetchPriceHistory(market);
   drawChart(history, false);
+  renderTrend(history);
+}
+
+function renderRecBanner(market) {
+  const banner = document.getElementById('rec-banner');
+  const cls = `rec-${market.recommendation}-banner`;
+  banner.className = 'rec-banner ' + cls;
+  const labels = {
+    buy:   { icon: '🟢', title: 'Buy Candidate',
+             tag:  'This market is worth analyzing.' },
+    watch: { icon: '🟡', title: 'Watch — proceed with caution',
+             tag:  'Tradeable but with caveats.' },
+    skip:  { icon: '🔴', title: 'Skip — the math rarely works here',
+             tag:  'Likely a bad bet regardless of your view.' },
+  };
+  const L = labels[market.recommendation];
+  banner.innerHTML = `
+    <span class="rec-banner-icon">${L.icon}</span>
+    <div class="rec-banner-content">
+      <div class="rec-banner-title">${L.title}</div>
+      <div class="rec-banner-text">
+        <strong>${L.tag}</strong> ${esc(market.recommendation_reason)}
+      </div>
+    </div>`;
+}
+
+function renderModalStats(market) {
+  document.getElementById('modal-stats').innerHTML = `
+    <div class="modal-stat">
+      <div class="modal-stat-label">YES Price</div>
+      <div class="modal-stat-value yes-price">${pct(market.yes_price)}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">NO Price</div>
+      <div class="modal-stat-value no-price">${pct(market.no_price)}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">Resolves In</div>
+      <div class="modal-stat-value">${
+        market.days_to_resolution == null ? '—'
+        : market.days_to_resolution < 1 ? '<1 day'
+        : Math.round(market.days_to_resolution) + ' days'}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">24h Volume</div>
+      <div class="modal-stat-value">${fmtMoneyFull(market.volume24hr)}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">Liquidity Pool</div>
+      <div class="modal-stat-value">${fmtMoneyFull(market.liquidity)}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">Total Volume</div>
+      <div class="modal-stat-value">${fmtMoneyFull(market.volume)}</div>
+    </div>`;
+}
+
+function renderTrend(history) {
+  const badge = document.getElementById('trend-badge');
+  if (!history || history.length < 2) { badge.textContent = ''; return; }
+
+  const last = history[history.length - 1].p;
+  const first = history[0].p;
+  const change24 = (() => {
+    const now = history[history.length - 1].t;
+    const target = now - 86400;
+    let nearest = history[0];
+    for (const h of history) if (Math.abs(h.t - target) < Math.abs(nearest.t - target)) nearest = h;
+    return last - nearest.p;
+  })();
+
+  const diff = change24 * 100;
+  const arrow = diff > 0.5 ? '▲' : diff < -0.5 ? '▼' : '◆';
+  const cls   = diff > 0.5 ? 'trend-up' : diff < -0.5 ? 'trend-down' : 'trend-flat';
+  badge.className = 'trend-badge ' + cls;
+  badge.textContent = `${arrow} ${diff > 0 ? '+' : ''}${diff.toFixed(1)}% (24h)`;
 }
 
 function drawChart(history, loading) {
@@ -471,8 +575,7 @@ function drawChart(history, loading) {
     ctx.fillStyle = '#8b949e';
     ctx.font = '13px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('No price history available for this market',
-                 canvas.width / 2, canvas.height / 2);
+    ctx.fillText('No price history available', canvas.width / 2, canvas.height / 2);
     return;
   }
 
@@ -487,8 +590,7 @@ function drawChart(history, loading) {
     data: {
       labels,
       datasets: [{
-        label: 'YES %',
-        data,
+        label: 'YES %', data,
         borderColor: '#3fb950',
         backgroundColor: 'rgba(63,185,80,0.08)',
         borderWidth: 2,
@@ -517,26 +619,77 @@ function closeModal() {
   if (priceChart) { priceChart.destroy(); priceChart = null; }
 }
 
-// ── Kelly ───────────────────────────────────────────────────────────────────
+// ── Kelly UX ────────────────────────────────────────────────────────────────
 
-function calcKelly() {
-  const probStr = document.getElementById('kelly-prob').value;
-  const bankroll = parseFloat(document.getElementById('kelly-bankroll').value) || 1000;
-  const mktPrice = parseFloat(document.getElementById('kelly-market-price').value) / 100;
-  if (!probStr || !mktPrice) return;
-  const userProb = parseFloat(probStr) / 100;
-  if (userProb < 0.01 || userProb > 0.99) return;
-
-  const r = kellyCalc(userProb, mktPrice, bankroll);
-  document.getElementById('kelly-direction').textContent = r.direction;
-  document.getElementById('kelly-direction').className   = `kelly-row-val direction-${r.direction}`;
-  document.getElementById('kelly-edge').textContent      = `${r.edge_pct > 0 ? '+' : ''}${r.edge_pct}%`;
-  document.getElementById('kelly-full').textContent      = r.full_kelly > 0 ? `$${r.full_kelly}` : 'No edge';
-  document.getElementById('kelly-half').textContent      = r.half_kelly > 0 ? `$${r.half_kelly}` : '—';
-  document.getElementById('kelly-result').classList.add('visible');
+function pickTrade(probValue) {
+  selectedProb = probValue;
+  computeAndRender();
 }
 
-// ── Event listeners (delegation) ────────────────────────────────────────────
+function computeAndRender() {
+  if (!openMarketObj || selectedProb == null) return;
+  const bankroll = parseFloat(document.getElementById('kelly-bankroll').value) || 1000;
+  const r = kellyCalc(selectedProb, openMarketObj.yes_price, bankroll);
+  renderKellyResult(r, selectedProb);
+}
+
+function renderKellyResult(r, userProb) {
+  const out = document.getElementById('kelly-result');
+  const yp  = openMarketObj.yes_price;
+  const yourPct = (userProb * 100).toFixed(0);
+  const marketPct = (yp * 100).toFixed(1);
+  const oppositePct = ((1 - yp) * 100).toFixed(1);
+
+  // Decide the headline
+  let headline, headlineCls, detail;
+
+  if (r.edge_pct < 5) {
+    headline = '⏸  Skip this one';
+    headlineCls = 'action-skip';
+    detail = `Your estimate (${yourPct}%) is too close to the market (${marketPct}%). Below 5% edge, spreads and uncertainty will eat your profit. Wait for a clearer mismatch.`;
+  } else if (r.direction === 'YES') {
+    headline = `🟢  BUY YES at ${marketPct}¢`;
+    headlineCls = 'action-yes';
+    detail = `You think YES has ~${yourPct}% chance, market is pricing ${marketPct}%. ` +
+             `That's a <strong>+${r.edge_pct}% edge</strong>. ` +
+             `Each YES share costs $${r.cost_per_share.toFixed(2)} and pays $1.00 if it happens.`;
+  } else {
+    headline = `🔴  BUY NO at ${oppositePct}¢`;
+    headlineCls = 'action-no';
+    detail = `You think NO is more likely (~${(100 - yourPct).toFixed(0)}% chance of NO), ` +
+             `market is pricing NO at only ${oppositePct}%. That's a <strong>+${r.edge_pct}% edge</strong>. ` +
+             `Each NO share costs $${r.cost_per_share.toFixed(2)} and pays $1.00 if NO is right.`;
+  }
+
+  let recCardsHtml = '';
+  if (r.edge_pct >= 5) {
+    const colorCls = r.direction === 'YES' ? 'yes-color' : 'no-color';
+    const cappedNote = r.is_capped
+      ? `<div class="kelly-rec-note">Capped at 2% of bankroll for safety. Full math says $${r.half_amt}.</div>`
+      : `<div class="kelly-rec-note">Half-Kelly amount — the safer sizing.</div>`;
+    recCardsHtml = `
+      <div class="kelly-recommendations">
+        <div class="kelly-rec-card recommended">
+          <div class="kelly-rec-label">Recommended bet <span class="kelly-rec-tag">Safer</span></div>
+          <div class="kelly-rec-amount ${colorCls}">$${r.safe_amt}</div>
+          ${cappedNote}
+        </div>
+        <div class="kelly-rec-card">
+          <div class="kelly-rec-label">Full Kelly (aggressive)</div>
+          <div class="kelly-rec-amount ${colorCls}">$${r.full_amt}</div>
+          <div class="kelly-rec-note">Theoretical max — only if your estimate is exact.</div>
+        </div>
+      </div>`;
+  }
+
+  out.innerHTML = `
+    <div class="kelly-action ${headlineCls}">${headline}</div>
+    <div class="kelly-detail">${detail}</div>
+    ${recCardsHtml}`;
+  out.classList.add('visible');
+}
+
+// ── Event listeners ─────────────────────────────────────────────────────────
 
 document.getElementById('cat-list').addEventListener('click', e => {
   const item = e.target.closest('.cat-item');
@@ -544,6 +697,14 @@ document.getElementById('cat-list').addEventListener('click', e => {
   currentCat = item.dataset.cat;
   currentPage = 0;
   renderCategories();
+  renderMarkets();
+});
+
+document.getElementById('rec-summary').addEventListener('click', e => {
+  const row = e.target.closest('[data-filter]');
+  if (!row) return;
+  document.getElementById('rec-filter').value = row.dataset.filter;
+  currentPage = 0;
   renderMarkets();
 });
 
@@ -570,12 +731,54 @@ document.getElementById('search-input').addEventListener('input', () => {
   searchDebounce = setTimeout(() => { currentPage = 0; renderMarkets(); }, 250);
 });
 document.getElementById('sort-select').addEventListener('change', () => { currentPage = 0; renderMarkets(); });
-document.getElementById('min-vol-select').addEventListener('change', () => { currentPage = 0; renderMarkets(); });
-
+document.getElementById('rec-filter').addEventListener('change',  () => { currentPage = 0; renderMarkets(); });
 document.getElementById('refresh-btn').addEventListener('click', refreshData);
 
-document.getElementById('kelly-prob').addEventListener('input', calcKelly);
-document.getElementById('kelly-bankroll').addEventListener('input', calcKelly);
+// Trade buttons
+document.querySelectorAll('.trade-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.trade-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    if (btn.id === 'trade-custom-btn') {
+      document.getElementById('custom-prob').classList.remove('hidden');
+      document.getElementById('kelly-prob').focus();
+      const p = +document.getElementById('kelly-prob').value;
+      if (p >= 1 && p <= 99) pickTrade(p / 100);
+    } else {
+      document.getElementById('custom-prob').classList.add('hidden');
+      pickTrade(+btn.dataset.prob);
+    }
+  });
+});
+
+document.getElementById('kelly-prob').addEventListener('input', () => {
+  const p = +document.getElementById('kelly-prob').value;
+  if (p >= 1 && p <= 99) pickTrade(p / 100);
+});
+document.getElementById('kelly-bankroll').addEventListener('input', computeAndRender);
+
+// Intro banner
+function maybeShowIntro() {
+  try {
+    if (!localStorage.getItem(INTRO_KEY)) return;
+    document.getElementById('intro-banner').classList.add('hidden');
+  } catch {}
+}
+document.getElementById('intro-close').addEventListener('click', () => {
+  document.getElementById('intro-banner').classList.add('hidden');
+  try { localStorage.setItem(INTRO_KEY, '1'); } catch {}
+});
+
+// Help modal
+document.getElementById('help-btn').addEventListener('click', () => {
+  document.getElementById('help-overlay').classList.remove('hidden');
+});
+document.getElementById('help-close').addEventListener('click', () => {
+  document.getElementById('help-overlay').classList.add('hidden');
+});
+document.getElementById('help-overlay').addEventListener('click', e => {
+  if (e.target.id === 'help-overlay') document.getElementById('help-overlay').classList.add('hidden');
+});
 
 // ── Utilities ───────────────────────────────────────────────────────────────
 
@@ -597,22 +800,23 @@ function esc(s) {
 }
 
 const SIGNAL_LABELS = {
-  VOLUME_SURGE:       '🔥 Volume Surge',
-  NEAR_CERTAIN_YES:   '✅ Near-Certain YES',
-  NEAR_CERTAIN_NO:    '❌ Near-Certain NO',
-  COIN_FLIP:          '🪙 Coin Flip',
-  LOW_LIQUIDITY:      '⚠ Low Liquidity',
-  DEEP_MARKET:        '💧 Deep Market',
-  RESOLVING_SOON:     '⏰ Resolving Soon',
-  RESOLVES_THIS_WEEK: '📅 This Week',
+  VOLUME_SURGE:       '🔥 Hot Market',
+  NEAR_CERTAIN_YES:   '✅ Crowd very confident YES',
+  NEAR_CERTAIN_NO:    '❌ Crowd very confident NO',
+  COIN_FLIP:          '🪙 Genuine coin flip',
+  LOW_LIQUIDITY:      '⚠ Tiny pool',
+  DEEP_MARKET:        '💧 Deep pool',
+  RESOLVING_SOON:     '⏰ Resolves in <2 days',
+  RESOLVES_THIS_WEEK: '📅 Resolves this week',
 };
 function signalLabel(s) { return SIGNAL_LABELS[s] || s; }
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 
 (async function init() {
-  if (loadCache()) render();          // Show cached data immediately if fresh
-  await refreshData();                // Then fetch live
+  maybeShowIntro();
+  if (loadCache()) render();
+  await refreshData();
   setInterval(refreshData, AUTO_REFRESH_MS);
   setInterval(renderRefreshTime, 30000);
 })();
